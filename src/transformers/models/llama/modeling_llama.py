@@ -327,8 +327,6 @@ class LlamaDecoderLayer(nn.Module):
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        residual = hidden_states
-
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
@@ -343,13 +341,10 @@ class LlamaDecoderLayer(nn.Module):
             position_embeddings=position_embeddings,
             **kwargs,
         )
-        hidden_states = residual + hidden_states
 
         # Fully Connected
-        residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
         if output_attentions:
@@ -825,9 +820,11 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
+        '''output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        )'''
+        # For the LCN implementation we always want to get the intermediate hidden states.
+        output_hidden_states = True 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
@@ -846,8 +843,15 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs[0]
+        # For LCN implementation, retrieve intermediate hidden states and sum.
+        all_hidden_states = outputs[2]
+        sum_hidden_states = all_hidden_states[0]
+        for hs in all_hidden_states[1:]:
+            sum_hidden_states = sum_hidden_states + hs
+
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+        # For LCN implementation use the sum instead of the last hidden state. 
+        logits = self.lm_head(sum_hidden_states[:, -num_logits_to_keep:, :])
 
         loss = None
         if labels is not None:
