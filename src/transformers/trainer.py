@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
+from oumi.utils.logging import logger
 
 # Integrations must be imported before ML frameworks:
 # isort: off
@@ -57,7 +58,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset, RandomSampler
 
 from . import __version__
 from .configuration_utils import PretrainedConfig
-from .data.data_collator import DataCollator, DataCollatorWithPadding, default_data_collator
+from .data.data_collator import DataCollator, DataCollatorWithPadding, DataCollatorWithFlattening, default_data_collator
 from .debug_utils import DebugOption, DebugUnderflowOverflow
 from .feature_extraction_sequence_utils import SequenceFeatureExtractor
 from .feature_extraction_utils import FeatureExtractionMixin
@@ -296,7 +297,8 @@ if TYPE_CHECKING:
     if is_datasets_available():
         import datasets
 
-logger = logging.get_logger(__name__)
+# TODO uncomment this , when I don't need to debug anymore.
+#logger = logging.get_logger(__name__)
 
 
 # Name of the files used for checkpointing
@@ -4246,6 +4248,9 @@ class Trainer:
         all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        # TODO this should no be hardcoded, I leave it for now in favour of iteration speed.
+        LLAMA_HIDDEN_LAYERS = 16
+        all_losses_intermid_list = [EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100) for _ in range(LLAMA_HIDDEN_LAYERS+1)]
 
         metrics = None
         eval_set_kwargs = {}
@@ -4264,7 +4269,7 @@ class Trainer:
                     batch_size = observed_batch_size
 
             # Prediction step
-            losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
+            losses, logits, labels, intermediate_logits = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
             main_input_name = getattr(self.model, "main_input_name", "input_ids")
             inputs_decode = (
                 self._prepare_input(inputs[main_input_name]) if "inputs" in args.include_for_metrics else None
@@ -4296,7 +4301,42 @@ class Trainer:
                 labels = self.gather_function((labels))
                 if not self.args.batch_eval_metrics or description == "Prediction":
                     all_labels.add(labels)
+            # Update intermediate loss containers
+            if intermediate_logits is not None:
+                for i,logits in enumerate(intermediate_logits):
+                    logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
+                    if self.preprocess_logits_for_metrics is not None:
+                        logits = self.preprocess_logits_for_metrics(logits, labels)
+                    logits = self.gather_function((logits))
+                    if not self.args.batch_eval_metrics or description == "Prediction":
+                        logits_container = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+                        logits_container.add(logits)
+                        logits_container.to_cpu_and_numpy()
+                        logits_for_loss = logits_container.get_arrays()
+                        
+                        labels_container = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+                        labels_container.add(labels)
+                        labels_container.to_cpu_and_numpy()
+                        labels_for_loss = labels_container.get_arrays()
 
+                        loss_func = torch.nn.CrossEntropyLoss()
+
+                        # Prepare logits and loss for passing through CE
+                        logits_for_loss = torch.from_numpy(logits_for_loss)
+                        labels_for_loss = torch.from_numpy(labels_for_loss)
+
+                        # First two dimensions are batch size and sequence length. CE expects them to be flattened.
+                        logits_for_loss = logits_for_loss.view(-1, logits_for_loss.shape[-1])
+                        labels_for_loss = labels_for_loss.view(-1)
+                        
+                        loss = round(float(loss_func(logits_for_loss, labels_for_loss)),4)
+                        all_losses_intermid_list[i].add(torch.Tensor([loss]))
+                        
+                        # Clean up memory to avoid OOM
+                        del logits
+                        del logits_container
+                        del logits_for_loss
+            
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
             if self.args.batch_eval_metrics:
@@ -4335,6 +4375,11 @@ class Trainer:
         all_labels = all_labels.get_arrays()
         all_inputs = all_inputs.get_arrays()
 
+        all_losses_intermid = []
+        for l in all_losses_intermid_list:
+            all_losses_intermid.append(l.get_arrays())
+        del all_losses_intermid_list
+        
         # Number of samples
         if has_length(eval_dataset):
             num_samples = len(eval_dataset)
@@ -4359,6 +4404,9 @@ class Trainer:
         ):
             eval_set_kwargs["losses"] = all_losses if "loss" in args.include_for_metrics else None
             eval_set_kwargs["inputs"] = all_inputs if "inputs" in args.include_for_metrics else None
+           
+            # Intermediate losses are propagated to compute metrics, to be averaged
+            eval_set_kwargs["all_losses_intermediate"] = all_losses_intermid
             metrics = self.compute_metrics(
                 EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
             )
@@ -4448,6 +4496,10 @@ class Trainer:
                 ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])
             else:
                 ignore_keys = []
+        
+        # Always ignore intermediate logits, those will be returned separately.
+        # This is done to avoid OOM, as intermediate logits are huge.        
+        ignore_keys = ignore_keys + ["intermediate_logits"]
 
         # labels may be popped when computing the loss (label smoothing for instance) so we grab them first.
         if has_labels or loss_without_labels:
@@ -4506,7 +4558,14 @@ class Trainer:
         if len(logits) == 1:
             logits = logits[0]
 
-        return (loss, logits, labels)
+        intermediate_logits = []
+        for il in outputs.intermediate_logits:
+            il = nested_detach(il)
+            if len(il) == 1:
+                il = il[0]
+            intermediate_logits.append(il)    
+
+        return (loss, logits, labels, intermediate_logits)
 
     def floating_point_ops(self, inputs: Dict[str, Union[torch.Tensor, Any]]):
         """
