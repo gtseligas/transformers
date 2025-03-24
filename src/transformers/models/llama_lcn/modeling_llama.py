@@ -47,7 +47,7 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from .configuration_llama import LlamaConfig
+from .configuration_llama import LlamaLCNConfig
 
 # TODO undo this when done with debugging
 # logger = logging.get_logger(__name__)
@@ -55,7 +55,7 @@ from oumi.utils.logging import logger
 
 
 _CHECKPOINT_FOR_DOC = "meta-llama/Llama-2-7b-hf"
-_CONFIG_FOR_DOC = "LlamaConfig"
+_CONFIG_FOR_DOC = "LlamaLCNConfig"
 
 
 class LlamaRMSNorm(nn.Module):
@@ -82,7 +82,7 @@ ALL_LAYERNORM_LAYERS.append(LlamaRMSNorm)
 
 
 class LlamaRotaryEmbedding(nn.Module):
-    def __init__(self, config: LlamaConfig, device=None):
+    def __init__(self, config: LlamaLCNConfig, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
@@ -233,7 +233,7 @@ def eager_attention_forward(
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+    def __init__(self, config: LlamaLCNConfig, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -307,7 +307,7 @@ class LlamaAttention(nn.Module):
 
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+    def __init__(self, config: LlamaLCNConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
@@ -365,7 +365,7 @@ LLAMA_START_DOCSTRING = r"""
     and behavior.
 
     Parameters:
-        config ([`LlamaConfig`]):
+        config ([`LlamaLCNConfig`]):
             Model configuration class with all the parameters of the model. Initializing with a config file does not
             load the weights associated with the model, only the configuration. Check out the
             [`~PreTrainedModel.from_pretrained`] method to load the model weights.
@@ -377,7 +377,7 @@ LLAMA_START_DOCSTRING = r"""
     LLAMA_START_DOCSTRING,
 )
 class LlamaPreTrainedModel(PreTrainedModel):
-    config_class = LlamaConfig
+    config_class = LlamaLCNConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["LlamaDecoderLayer"]
@@ -485,10 +485,10 @@ class LlamaModel(LlamaPreTrainedModel):
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
 
     Args:
-        config: LlamaConfig
+        config: LlamaLCNConfig
     """
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaLCNConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -566,8 +566,6 @@ class LlamaModel(LlamaPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         # decoder layers
-        logger.info(f"output_hidden_states boolean is: {output_hidden_states}")
-
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
@@ -846,18 +844,26 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             **kwargs,
         )
 
-        logger.info(f"base model outputs: {outputs}")
 
-        hidden_states = outputs[0]
+        hidden_states = outputs.last_hidden_state
         # For LCN implementation, retrieve intermediate hidden states and sum.
         # TODO verify that this works.
-        all_hidden_states = outputs[2]
+        all_hidden_states = outputs.hidden_states
         sum_hidden_states = all_hidden_states[0]
+        
+        # Keep track of intermediate logits, when evaluating.
+        intermediate_logits = ()
+        if not self.training:
+            intermediate_logits += (self.lm_head(sum_hidden_states[:, -num_logits_to_keep:, :]),)
+        
         for hs in all_hidden_states[1:]:
             sum_hidden_states = sum_hidden_states + hs
+            # Update intermediate logits, when evaluating.
+            if not self.training:
+                intermediate_logits += (self.lm_head(sum_hidden_states[:, -num_logits_to_keep:, :]),)
 
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        # For LCN implementation use the sum instead of the last hidden state. 
+        # For LCN implementation use the sum instead of the last hidden state.
         logits = self.lm_head(sum_hidden_states[:, -num_logits_to_keep:, :])
 
         loss = None
@@ -867,13 +873,23 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-
+        
+        # Only if evaluating, include intermediate logits in the output.
+        if not self.training: 
+            return CausalLMOutputWithPast(
+                loss=loss,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+                intermediate_logits=intermediate_logits,
+            )
         return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+                loss=loss,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
         )
 
 

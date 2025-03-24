@@ -158,6 +158,7 @@ class EvalPrediction:
         label_ids (`np.ndarray`): Targets to be matched.
         inputs (`np.ndarray`, *optional*): Input data passed to the model.
         losses (`np.ndarray`, *optional*): Loss values computed during evaluation.
+        all_losses_intermediate (`np.ndarray`, *optional*): Intermediate layer losses, used for LCN model evaluation.
     """
 
     def __init__(
@@ -166,11 +167,13 @@ class EvalPrediction:
         label_ids: Union[np.ndarray, Tuple[np.ndarray]],
         inputs: Optional[Union[np.ndarray, Tuple[np.ndarray]]] = None,
         losses: Optional[Union[np.ndarray, Tuple[np.ndarray]]] = None,
+        all_losses_intermediate: Optional[Union[np.ndarray, Tuple[np.ndarray]]] = None,
     ):
         self.predictions = predictions
         self.label_ids = label_ids
         self.inputs = inputs
         self.losses = losses
+        self.all_losses_intermediate = all_losses_intermediate
         self.elements = (self.predictions, self.label_ids)
         if self.inputs is not None:
             self.elements += (self.inputs,)

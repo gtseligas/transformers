@@ -23,7 +23,7 @@ from ...configuration_utils import PretrainedConfig
 from ...modeling_rope_utils import rope_config_validation
 
 
-class LlamaConfig(PretrainedConfig):
+class LlamaLCNConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`LlamaModel`]. It is used to instantiate an LLaMA
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
@@ -127,10 +127,10 @@ class LlamaConfig(PretrainedConfig):
             The attention head dimension. If None, it will default to hidden_size // num_attention_heads
 
     ```python
-    >>> from transformers import LlamaModel, LlamaConfig
+    >>> from transformers import LlamaModel, LlamaLCNConfig
 
     >>> # Initializing a LLaMA llama-7b style configuration
-    >>> configuration = LlamaConfig()
+    >>> configuration = LlamaLCNConfig()
 
     >>> # Initializing a model from the llama-7b style configuration
     >>> model = LlamaModel(configuration)
@@ -216,4 +216,4 @@ class LlamaConfig(PretrainedConfig):
         )
 
 
-__all__ = ["LlamaConfig"]
+__all__ = ["LlamaLCNConfig"]

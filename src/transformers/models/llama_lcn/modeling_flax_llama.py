@@ -35,12 +35,12 @@ from jax import lax
 from ...modeling_flax_outputs import FlaxBaseModelOutput, FlaxCausalLMOutput
 from ...modeling_flax_utils import ACT2FN, FlaxPreTrainedModel, append_call_sample_docstring
 from ...utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging
-from .configuration_llama import LlamaConfig
+from .configuration_llama import LlamaLCNConfig
 
 
 logger = logging.get_logger(__name__)
 
-_CONFIG_FOR_DOC = "LlamaConfig"
+_CONFIG_FOR_DOC = "LlamaLCNConfig"
 _CHECKPOINT_FOR_DOC = "afmck/testing-llama-tiny"
 _REAL_CHECKPOINT_FOR_DOC = "openlm-research/open_llama_3b_v2"
 
@@ -62,7 +62,7 @@ LLAMA_START_DOCSTRING = r"""
     - [Parallelization](https://jax.readthedocs.io/en/latest/jax.html#parallelization-pmap)
 
     Parameters:
-        config ([`LlamaConfig`]): Model configuration class with all the parameters of the model.
+        config ([`LlamaLCNConfig`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
             configuration. Check out the [`~FlaxPreTrainedModel.from_pretrained`] method to load the model weights.
         dtype (`jax.numpy.dtype`, *optional*, defaults to `jax.numpy.float32`):
@@ -150,7 +150,7 @@ def apply_rotary_pos_emb(tensor, sin_pos, cos_pos):
 
 
 class FlaxLlamaRMSNorm(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -168,7 +168,7 @@ class FlaxLlamaRMSNorm(nn.Module):
 
 
 class FlaxLlamaRotaryEmbedding(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -189,7 +189,7 @@ class FlaxLlamaRotaryEmbedding(nn.Module):
 
 
 class FlaxLlamaAttention(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
     causal: bool = True
     is_cross_attention: bool = False
@@ -335,7 +335,7 @@ class FlaxLlamaAttention(nn.Module):
 
 
 class FlaxLlamaMLP(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -358,7 +358,7 @@ class FlaxLlamaMLP(nn.Module):
 
 
 class FlaxLlamaDecoderLayer(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -406,13 +406,13 @@ class FlaxLlamaPreTrainedModel(FlaxPreTrainedModel):
     models.
     """
 
-    config_class = LlamaConfig
+    config_class = LlamaLCNConfig
     base_model_prefix = "model"
     module_class: nn.Module = None
 
     def __init__(
         self,
-        config: LlamaConfig,
+        config: LlamaLCNConfig,
         input_shape: Tuple = (1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
@@ -533,7 +533,7 @@ class FlaxLlamaPreTrainedModel(FlaxPreTrainedModel):
 
 
 class FlaxLlamaLayerCollection(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -579,7 +579,7 @@ class FlaxLlamaLayerCollection(nn.Module):
 
 
 class FlaxLlamaModule(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -655,7 +655,7 @@ append_call_sample_docstring(
 
 
 class FlaxLlamaForCausalLMModule(nn.Module):
-    config: LlamaConfig
+    config: LlamaLCNConfig
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):

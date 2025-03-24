@@ -701,6 +701,9 @@ class CausalLMOutputWithPast(ModelOutput):
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
+        intermediate_logits (`tuple(torch.FloatTensor)`, *optional*, returned by LCN models):
+
+            Used when training LCN models to calculate intermediate layer losses for evaluation steps.    
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -708,6 +711,7 @@ class CausalLMOutputWithPast(ModelOutput):
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    intermediate_logits: Optional[Tuple[torch.FloatTensor, ...]] = None
 
 
 @dataclass
