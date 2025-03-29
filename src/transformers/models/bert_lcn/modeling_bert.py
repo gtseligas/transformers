@@ -465,7 +465,9 @@ class BertSelfOutput(nn.Module):
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        # Kill the residual connection
+        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(hidden_states)
         return hidden_states
 
 
@@ -551,7 +553,9 @@ class BertOutput(nn.Module):
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        # Kill the residual connection
+        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(hidden_states) 
         return hidden_states
 
 
@@ -1151,8 +1155,17 @@ class BertModel(BertPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        sequence_output = encoder_outputs[0]
-        pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
+        # sequence_output = encoder_outputs[0]
+        # For the LCN BERT implementation sum all the hidden states before applying pooling.
+        all_sequence_outputs = encoder_outputs[2]
+        sequence_sum = all_sequence_outputs[0]
+        # Intermediate pooled outputs for intermediate loss calculation
+        intermediate_pooled_outputs = [self.pooler(sequence_sum) if self.pooler is not None else None]
+        for output in all_sequence_outputs:
+            sequence_sum = sequence_sum + output
+            intermediate_pooled_outputs.append(self.pooler(sequence_sum) if self.pooler is not None else None)
+
+        pooled_output = self.pooler(sequence_sum) if self.pooler is not None else None
 
         if not return_dict:
             return (sequence_output, pooled_output) + encoder_outputs[1:]
@@ -1164,6 +1177,7 @@ class BertModel(BertPreTrainedModel):
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
             cross_attentions=encoder_outputs.cross_attentions,
+            intermediate_pooler_outputs=intermediate_pooled_outputs,
         )
 
 
@@ -1679,6 +1693,18 @@ class BertForSequenceClassification(BertPreTrainedModel):
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
 
+        # Intermediate logits calculation
+        intermediate_pooled_outputs = outputs[-1]
+        intermediate_logits = []
+        for ipo in intermediate_pooled_outputs:
+            ipo = self.dropout(ipo)
+            intermediate_logits.append(self.classifier(ipo))
+
+        intermediate_losses = []
+        loss_fct = CrossEntropyLoss()
+        for il in intermediate_logits:
+            intermediate_losses.append(loss_fct(il.view(-1, self.num_labels), labels.view(-1)))
+
         loss = None
         if labels is not None:
             if self.config.problem_type is None:
@@ -1710,6 +1736,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
             logits=logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            intermediate_losses=intermediate_losses,
         )
 
 
