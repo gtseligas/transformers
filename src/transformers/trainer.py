@@ -596,7 +596,19 @@ class Trainer:
             and isinstance(processing_class, (PreTrainedTokenizerBase, SequenceFeatureExtractor))
             else default_data_collator
         )
+        # Only for the case of LCN Llama, we opt for the Flattening collator, as it is suitable
+        # to work with packed sequences. For the rest of the model cases, let's not interfere with
+        # the library, to minimize our impact on code functionality.
+        if model.__class__.__name__ == "LlamaForCausalLM":
+            default_collator = DataCollatorWithFlattening()
+            logger.info("Using data collator with flattening")
+
         self.data_collator = data_collator if data_collator is not None else default_collator
+
+        if data_collator is not None:
+            logger.info(f"using data_collator passed {data_collator}")
+
+
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.processing_class = processing_class
