@@ -1015,7 +1015,7 @@ class SequenceClassifierOutput(ModelOutput):
     logits: torch.FloatTensor = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    intermediate_losses: Optional[List[torch.FloatTensor]] = None
+    intermediate_logits: Optional[List[torch.FloatTensor]] = None
 
 
 @dataclass

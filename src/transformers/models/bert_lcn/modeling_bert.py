@@ -462,12 +462,12 @@ class BertSelfOutput(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor, gate: float) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        # Kill the residual connection
-        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        hidden_states = self.LayerNorm(hidden_states)
+        # Kill the residual connection, or use a gating schedule
+        hidden_states = self.LayerNorm(hidden_states + (1-gate)*input_tensor)
+        #hidden_states = self.LayerNorm(hidden_states)
         return hidden_states
 
 
@@ -513,6 +513,7 @@ class BertAttention(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
+        gate: Optional[float] = None,
     ) -> Tuple[torch.Tensor]:
         self_outputs = self.self(
             hidden_states,
@@ -523,7 +524,7 @@ class BertAttention(nn.Module):
             past_key_value,
             output_attentions,
         )
-        attention_output = self.output(self_outputs[0], hidden_states)
+        attention_output = self.output(self_outputs[0], hidden_states, gate)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
         return outputs
 
@@ -550,12 +551,12 @@ class BertOutput(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor, gate: float) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         # Kill the residual connection
-        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        hidden_states = self.LayerNorm(hidden_states) 
+        hidden_states = self.LayerNorm(hidden_states + (1-gate)*input_tensor)
+        #hidden_states = self.LayerNorm(hidden_states) 
         return hidden_states
 
 
@@ -573,6 +574,7 @@ class BertLayer(nn.Module):
             self.crossattention = BertAttention(config, position_embedding_type="absolute")
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
+        self.gate = 1.0
 
     def forward(
         self,
@@ -583,6 +585,7 @@ class BertLayer(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
+        gate: Optional[float] = None,
     ) -> Tuple[torch.Tensor]:
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
@@ -592,6 +595,7 @@ class BertLayer(nn.Module):
             head_mask,
             output_attentions=output_attentions,
             past_key_value=self_attn_past_key_value,
+            gate=gate,
         )
         attention_output = self_attention_outputs[0]
 
@@ -628,6 +632,7 @@ class BertLayer(nn.Module):
             cross_attn_present_key_value = cross_attention_outputs[-1]
             present_key_value = present_key_value + cross_attn_present_key_value
 
+        self.gate = gate
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
@@ -641,7 +646,7 @@ class BertLayer(nn.Module):
 
     def feed_forward_chunk(self, attention_output):
         intermediate_output = self.intermediate(attention_output)
-        layer_output = self.output(intermediate_output, attention_output)
+        layer_output = self.output(intermediate_output, attention_output, self.gate)
         return layer_output
 
 
@@ -664,6 +669,7 @@ class BertEncoder(nn.Module):
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
+        gate: Optional[float] = 1.0,
     ) -> Union[Tuple[torch.Tensor], BaseModelOutputWithPastAndCrossAttentions]:
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -704,6 +710,7 @@ class BertEncoder(nn.Module):
                     encoder_attention_mask,
                     past_key_value,
                     output_attentions,
+                    gate,
                 )
 
             hidden_states = layer_outputs[0]
@@ -1023,6 +1030,7 @@ class BertModel(BertPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        gate: Optional[float] = None,
     ) -> Union[Tuple[torch.Tensor], BaseModelOutputWithPoolingAndCrossAttentions]:
         r"""
         encoder_hidden_states  (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
@@ -1045,9 +1053,11 @@ class BertModel(BertPreTrainedModel):
             `past_key_values`).
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
+        '''output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        )'''
+        output_hidden_states = True # Always return hidden states for LCN
+
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if self.config.is_decoder:
@@ -1154,15 +1164,16 @@ class BertModel(BertPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            gate=gate,
         )
-        # sequence_output = encoder_outputs[0]
+        sequence_output = encoder_outputs[0]
         # For the LCN BERT implementation sum all the hidden states before applying pooling.
-        all_sequence_outputs = encoder_outputs[2]
-        sequence_sum = all_sequence_outputs[0]
+        all_sequence_outputs = encoder_outputs[1]
+        sequence_sum = all_sequence_outputs[0] * gate
         # Intermediate pooled outputs for intermediate loss calculation
         intermediate_pooled_outputs = [self.pooler(sequence_sum) if self.pooler is not None else None]
-        for output in all_sequence_outputs:
-            sequence_sum = sequence_sum + output
+        for i,output in enumerate(all_sequence_outputs):
+            sequence_sum = sequence_sum + output * gate if i<len(all_sequence_outputs)-1 else sequence_sum + output
             intermediate_pooled_outputs.append(self.pooler(sequence_sum) if self.pooler is not None else None)
 
         pooled_output = self.pooler(sequence_sum) if self.pooler is not None else None
@@ -1631,7 +1642,7 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
     """,
     BERT_START_DOCSTRING,
 )
-class BertForSequenceClassification(BertPreTrainedModel):
+class LCNBertForSequenceClassification(BertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
@@ -1667,6 +1678,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        gate: Optional[float] = 1.0,
     ) -> Union[Tuple[torch.Tensor], SequenceClassifierOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1686,6 +1698,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            gate=gate,
         )
 
         pooled_output = outputs[1]
@@ -1699,11 +1712,6 @@ class BertForSequenceClassification(BertPreTrainedModel):
         for ipo in intermediate_pooled_outputs:
             ipo = self.dropout(ipo)
             intermediate_logits.append(self.classifier(ipo))
-
-        intermediate_losses = []
-        loss_fct = CrossEntropyLoss()
-        for il in intermediate_logits:
-            intermediate_losses.append(loss_fct(il.view(-1, self.num_labels), labels.view(-1)))
 
         loss = None
         if labels is not None:
@@ -1736,7 +1744,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
             logits=logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            intermediate_losses=intermediate_losses,
+            intermediate_logits=intermediate_logits,
         )
 
 
@@ -2026,7 +2034,7 @@ __all__ = [
     "BertForNextSentencePrediction",
     "BertForPreTraining",
     "BertForQuestionAnswering",
-    "BertForSequenceClassification",
+    "LCNBertForSequenceClassification",
     "BertForTokenClassification",
     "BertLayer",
     "BertLMHeadModel",
