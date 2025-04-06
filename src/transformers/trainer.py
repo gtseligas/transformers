@@ -2390,6 +2390,9 @@ class Trainer:
         logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
         logger.info(f"  Total optimization steps = {max_steps:,}")
         logger.info(f"  Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}")
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Number of parameters total {total}\nNumber of parameters trainable {trainable}")
 
         self.state.epoch = 0
         start_time = time.time()
@@ -4323,9 +4326,11 @@ class Trainer:
                     if not self.args.batch_eval_metrics or description == "Prediction":
                         logits_container = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
                         logits_container.add(logits)
+                        del logits
                         logits_container.to_cpu_and_numpy()
                         logits_for_loss = logits_container.get_arrays()
-                        
+                        del logits_container
+
                         labels_container = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
                         labels_container.add(labels)
                         labels_container.to_cpu_and_numpy()
@@ -4342,12 +4347,9 @@ class Trainer:
                         labels_for_loss = labels_for_loss.view(-1)
                         
                         loss = round(float(loss_func(logits_for_loss, labels_for_loss)),4)
-                        all_losses_intermid_list[i].add(torch.Tensor([loss]))
-                        
                         # Clean up memory to avoid OOM
-                        del logits
-                        del logits_container
                         del logits_for_loss
+                        all_losses_intermid_list[i].add(torch.Tensor([loss]))
             
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
