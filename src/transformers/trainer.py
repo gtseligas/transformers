@@ -4284,7 +4284,9 @@ class Trainer:
                     batch_size = observed_batch_size
 
             # Prediction step
-            losses, logits, labels, intermediate_logits = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
+            intermediate_logits = None # This will be utilized only if we calculate intermediate metrics
+            # losses, logits, labels, intermediate_logits = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
+            losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
             main_input_name = getattr(self.model, "main_input_name", "input_ids")
             inputs_decode = (
                 self._prepare_input(inputs[main_input_name]) if "inputs" in args.include_for_metrics else None
@@ -4572,12 +4574,14 @@ class Trainer:
         if len(logits) == 1:
             logits = logits[0]
 
-        intermediate_logits = []
-        for il in outputs.intermediate_logits:
-            il = nested_detach(il)
-            if len(il) == 1:
-                il = il[0]
-            intermediate_logits.append(il)    
+        intermediate_logits = None
+        if outputs.intermediate_logits is not None:
+            intermediate_logits = []
+            for il in outputs.intermediate_logits:
+                il = nested_detach(il)
+                if len(il) == 1:
+                    il = il[0]
+                intermediate_logits.append(il)    
 
         return (loss, logits, labels, intermediate_logits)
 
