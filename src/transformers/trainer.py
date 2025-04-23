@@ -2194,6 +2194,7 @@ class Trainer:
     ):
         self.accelerator.free_memory()
         self._train_batch_size = batch_size
+        self.snapshot_counter = 0
         if self.args.auto_find_batch_size:
             if self.state.train_batch_size != self._train_batch_size:
                 from accelerate.utils import release_memory
@@ -2498,6 +2499,7 @@ class Trainer:
                 for i, inputs in enumerate(batch_samples):
                     step += 1
                     do_sync_step = (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == steps_in_epoch
+                    do_mem_snapshot = (step+1) % args.logging_steps == 0
                     # Since we perform prefetching, we need to manually set sync_gradients
                     if not do_sync_step:
                         self.accelerator.gradient_state._set_sync_gradients(False)
@@ -2562,6 +2564,10 @@ class Trainer:
                         tr_loss = tr_loss + tr_loss_step
 
                     self.current_flos += float(self.floating_point_ops(inputs))
+
+                    if do_mem_snapshot:
+                        self.snapshot_counter = self.snapshot_counter + 1
+                        torch.cuda.memory._dump_snapshot(f"memory_snapshots/snapshot_{self.snapshot_counter}.pickle")
 
                     if do_sync_step:
                         # Since we perform prefetching, we need to manually set sync_gradients to True
