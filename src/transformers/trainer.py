@@ -35,6 +35,7 @@ import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, Union
+from memory_profiler import profile
 
 from oumi.utils.logging import logger
 
@@ -756,10 +757,13 @@ class Trainer:
 
         if (args.fp16 or args.bf16) and not (self.is_deepspeed_enabled or is_sagemaker_mp_enabled()):
             # deepspeed and SageMaker Model Parallel manage their own half precision
+            logger.info("Inside fp16 and bf16 clause")
             if args.half_precision_backend == "cpu_amp":
+                logger.info("inside cpu amp")
                 self.use_cpu_amp = True
                 self.amp_dtype = torch.bfloat16
             elif args.half_precision_backend == "apex":
+                logger.info("inside apex")
                 if not is_apex_available():
                     raise ImportError(
                         "Using FP16 with APEX but APEX is not installed, please refer to"
@@ -2080,7 +2084,8 @@ class Trainer:
             self.accelerator.ddp_handler = DistributedDataParallelKwargs(**kwargs)
 
         return model
-
+    
+    @profile
     def train(
         self,
         resume_from_checkpoint: Optional[Union[str, bool]] = None,
@@ -4270,7 +4275,7 @@ class Trainer:
         all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         # TODO this should no be hardcoded, I leave it for now in favour of iteration speed.
-        LLAMA_HIDDEN_LAYERS = 16
+        LLAMA_HIDDEN_LAYERS = 8
         all_losses_intermid_list = [EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100) for _ in range(LLAMA_HIDDEN_LAYERS+1)]
 
         metrics = None
